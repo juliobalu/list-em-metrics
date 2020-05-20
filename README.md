@@ -1,11 +1,11 @@
 # list-em-metrics
- List metics like AWS CLI for Enhanced Monitoring
+ List metrics like AWS CLI for Enhanced Monitoring
 
 ## About
 
  This project is a demo, and uses boto3 and click to list metrics from Enhanced Monitoring for a specific RDS DB Instance. Users can list all available metrics (limited by 2000 data points) or chose a specific period.
 
- I designed this project deu to Enhanced Monitoring Graphs limitation for 1 hour period.
+ I designed this project due to Enhanced Monitoring Graphs limitation for 1 hour period.
 
 ## Configuring
 
