@@ -38,32 +38,41 @@ def convert_to_timestamp(date_time):
     help="Only metrics for a DBInstance")
 @click.option('--metric', default=None,
     help="Listing only one metric at a time")
-@click.option('--startTime', default=None,
+@click.option('--start-time', default=None,
     help="The start of the time range to list the metrics. If not provided, only the metrics for the last hour will be returned")
-@click.option('--endTime', default=None,
+@click.option('--end-time', default=None,
     help="The end of the time range to list the metrics. If not provided, only the metrics for one hour after the start time will be returned")
 
-def list_em_metrics(db_instance, metric, startTime, endTime):
+def list_em_metrics(db_instance, metric, start_time, end_time):
 
-    if startTime:
-        start_time = convert_to_timestamp(startTime)
-        if not start_time:
+    if start_time:
+        time_start = convert_to_timestamp(start_time)
+        if not time_start:
             print("Invalid startTime. Please enter startTime formated as YYYY-MM-DD HH:mm:ss")
             return
     else:
         # Get UTC time now
-        start_time = datetime.now(timezone.utc)
+        time_start = datetime.now(timezone.utc)
         # Subtract one hour
-        start_time = start_time - timedelta(hours=1)
+        time_start = time_start - timedelta(hours=1)
+        time_start = datetime.timestamp(time_start)
 
-    if endTime:
-        end_time = convert_to_timestamp(endTime)
-        if not end_time:
+    if end_time:
+        time_end = convert_to_timestamp(end_time)
+        if not time_end:
             print("Invalid endTime. Please enter startTime formated as YYYY-MM-DD HH:mm:ss")
             return
     else:
         # Get UTC time now
-        end_time = datetime.now(timezone.utc)
+        time_end = datetime.now(timezone.utc)
+        time_end = datetime.timestamp(time_end)
+
+    if time_end <= time_start:
+        if not start_time:
+            print("Error: start-time was not provided. start-time considered as " + datetime.utcfromtimestamp(time_start).strftime("%Y-%m-%d %H:%M:%S") + ". end-time must be greater than start-time.")
+        else:
+            print("Error: end-time must be greater than start-time")
+        return
 
     if not db_instance:
         print("Please specify a DBInstance Identifier to list the metrics.")
@@ -81,29 +90,44 @@ def list_em_metrics(db_instance, metric, startTime, endTime):
         #print("Resource id: " + resource_id)
 
         try:
-            response = log.get_log_events(logGroupName="RDSOSMetrics",logStreamName=resource_id,startTime=start_time,endTime=end_time,startFromHead=True)
-        except logs.exceptions.ResourceNotFoundException:
+            response = log.get_log_events(logGroupName="RDSOSMetrics",logStreamName=resource_id,startTime=int(time_start*1000),endTime=int(time_end*1000),startFromHead=True)
+        except log.exceptions.ResourceNotFoundException:
             print("Enhanced Monitoriong not enabled for DBInstance " + db_instance)
 
         iteract = 1
-        data_srt = ""
+        data_str = ""
+        log_timestamp = time_start
         metric_group = "cpuUtilization" # --> Change This
 
-        for event in response.get('events'):
-            msg = event.get('message')
-            msg_json = json.loads(msg)
-            if iteract == 1:
-                data_str = "{\n\t'engine': '" + msg_json.get("engine") + "',\n\t"
-                data_str += "'instanceID': '" + db_instance + "',\n\t"
-                data_str += "'instanceResourceID': '" + resource_id + "',\n\t"
-                data_str += "'numVCPUs': " + str(msg_json.get("numVCPUs")) + ",\n\t"
-                data_str += "'" + metric_group + "': [\n\t\t"
-            else:
-                data_str += ",\n\t\t"
-            group = msg_json.get(metric_group)
-            data_str += "{'timestamp': '" + msg_json.get("timestamp") + "', "
-            data_str += "'" + metric + "': " + str(group.get(metric)) + "}"
-            iteract += 1
+        while iteract <= 2000 and log_timestamp < time_end:
+            for event in response.get('events'):
+                msg = event.get('message')
+                msg_json = json.loads(msg)
+                if iteract == 1:
+                    data_str = "{\n\t'engine': '" + msg_json.get("engine") + "',\n\t"
+                    data_str += "'instanceID': '" + db_instance + "',\n\t"
+                    data_str += "'instanceResourceID': '" + resource_id + "',\n\t"
+                    data_str += "'numVCPUs': " + str(msg_json.get("numVCPUs")) + ",\n\t"
+                    data_str += "'" + metric_group + "': [\n\t\t"
+                else:
+                    data_str += ",\n\t\t"
+                group = msg_json.get(metric_group)
+                data_str += "{'timestamp': '" + msg_json.get("timestamp").replace('T', ' ').replace('Z','') + "', "
+                data_str += "'" + metric + "': " + str(group.get(metric)) + "}"
+
+                log_timestamp = msg_json.get("timestamp")
+                log_timestamp = log_timestamp.replace('T', ' ').replace('Z','')
+                log_timestamp = convert_to_timestamp(log_timestamp)
+
+                iteract += 1
+                if iteract > 2000:
+                    break
+
+            next_token = response.get('nextForwardToken')
+
+            response = log.get_log_events(logGroupName="RDSOSMetrics",logStreamName=resource_id,startTime=int(time_start*1000),endTime=int(time_end*1000),nextToken=next_token,startFromHead=True)
+            if next_token == response.get('nextForwardToken'):
+                break
 
         data_str += "\n\t]\n}"
 
