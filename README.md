@@ -19,7 +19,7 @@
 
 ## Running
 
- pipenv run python "list-em-metrics.py" --db-instance=<instance id> --metric=<metric name> <--start-time=YYYY-MM-DD HH:mm:ss> <--end-time=YYYY-MM-DD HH:mm:ss>
+ pipenv run python "list-em-metrics.py" --db-instance=<instance id> --metric=<metric name> <--start-time=YYYY-MM-DDTHH:mm:ssZ> <--end-time=YYYY-MM-DDTHH:mm:ssZ>
 
  *db-instance* is required
  *--metric* is required. Valid names are
