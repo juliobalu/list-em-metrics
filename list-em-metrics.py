@@ -40,13 +40,13 @@ def get_resource_id(instance):
             resource_id = response.get('DBInstances')[0].get('DbiResourceId')
             engine = response.get('DBInstances')[0].get('Engine')
             if engine in [ "sqlserver-ee" , "sqlserver-se" , "sqlserver-ex" , "sqlserver-web" ]:
-               so = "Windows"
+                os = "Windows"
             else:
-               so = "Linux"
+                os = "Linux"
         except rds.exceptions.DBInstanceNotFoundFault:
             resource_id = None
 
-    return resource_id, so
+    return resource_id, os
 
 def convert_to_timestamp(date_time):
 
@@ -61,17 +61,64 @@ def convert_to_timestamp(date_time):
 
     return date_time
 
+
 @click.command()
 @click.option('--db-instance', default=None,
     help="Only metrics for a DBInstance")
-@click.option('--metric', default=None,
-    help="Listing only one metric at a time")
+@click.option('--group',default=None,
+    help="Listing only metrics for a specific group")
+@click.option('--metrics', default=None,
+    help="Set of metrics withing a group to be listed")
 @click.option('--start-time', default=None,
     help="The start of the time range to list the metrics. If not provided, only the metrics for the last hour will be returned")
 @click.option('--end-time', default=None,
     help="The end of the time range to list the metrics. If not provided, only the metrics for one hour after the start time will be returned")
 
-def list_em_metrics(db_instance, metric, start_time, end_time):
+def list_em_metrics(db_instance, group, metrics, start_time, end_time):
+
+    #Check if db-instance was provided
+    if not db_instance:
+        print("Please specify a DBInstance Identifier to list the metrics.")
+        return
+
+    #Get the esource id for the db-instance provided and the op
+    resource_id, os = get_resource_id(db_instance)
+
+    #If db-instance was not foud, print a message to customer
+    if not resource_id:
+        print("DBInstance not found. Please review the DbInstance Identifier and try again.")
+        return
+
+    # Check if Group metric was provided
+    if not group:
+        print("Please specify a Metric Group.")
+        return
+    else:
+        metric_group = None
+        # Check if the group is valid
+        os_metrics = available_em_metrics.get(os)
+        for g in os_metrics:
+            if g == group:
+                # Group found!
+                metric_group = group
+                break
+
+        if not metric_group:
+            print("Group " + group + " is not a valid Group for EM metric. Please refer to EM documentation for more information." )
+            return
+
+    # Check if cusotmer provided a least one metric to be listed
+    if not metrics:
+        print("Please specify a metric. Type list-em-metrics --metric --help for a list of available options.")
+        return
+    else:
+        # format metrics as a list
+        metric_list = metrics.split(",")
+        #verify if all the metrics belong to the group provided by customer
+        for m in metric_list:
+            if m not in os_metrics.get(group):
+                print("Metric " + m + " is not a valid metric for group " + group + ". Please refer to EM documentation for more information.")
+                return
 
     if start_time:
         start_time = start_time.replace('T', ' ').replace('Z','')
@@ -104,14 +151,6 @@ def list_em_metrics(db_instance, metric, start_time, end_time):
             print("Error: end-time must be greater than start-time")
         return
 
-    if not db_instance:
-        print("Please specify a DBInstance Identifier to list the metrics.")
-        return
-
-    if not metric:
-        print("Please specify a metric. Type list-em-metrics --metric --help for a list of available options.")
-        return
-
     resource_id, so = get_resource_id(db_instance)
 
     if not resource_id:
@@ -128,46 +167,39 @@ def list_em_metrics(db_instance, metric, start_time, end_time):
         data_str = ""
         log_timestamp = time_start
 
-        # get the EM metrics group
-        metric_group = None
-        so_metrics = available_em_metrics.get(so)
-        for group in so_metrics:
-            if metric in so_metrics.get(group):
-                metric_group = group
-                break
-
-        if not metric_group:
-            print("Metric " + metric + " is not a valid EM metric. Please refer to EM documentation for more information." )
-            return
-
         while iteract <= 2000 and log_timestamp < time_end:
             for event in response.get('events'):
                 msg = event.get('message')
                 msg_json = json.loads(msg)
                 if iteract == 1:
-                    data_str = "{ 'engine' : '" + msg_json.get("engine") + "' ,"
-                    data_str += " 'instanceID' : '" + db_instance + "' ,"
-                    data_str += " 'instanceResourceID' : '" + resource_id + "' ,"
-                    data_str += " 'numVCPUs' : " + str(msg_json.get("numVCPUs")) + " ,"
-                    data_str += " 'uptime' : '" + msg_json.get("uptime") + "' ,"
-                    data_str += " '" + metric_group + "' : ["
+                    data_str = "{\n\t\"engine\": \"" + msg_json.get("engine") + "\",\n"
+                    data_str += "\t\"instanceID\": \"" + db_instance + "\",\n"
+                    data_str += "\t\"instanceResourceID\": \"" + resource_id + "\",\n"
+                    data_str += "\t\"numVCPUs\": " + str(msg_json.get("numVCPUs")) + ",\n"
+                    data_str += "\t\"uptime\": \"" + msg_json.get("uptime") + "\",\n"
+                    data_str += "\t\"" + metric_group + "\": [\n\t\t"
                 else:
-                    data_str += ","
+                    data_str += ",\n\t\t"
                 group = msg_json.get(metric_group)
-                data_str += " { 'timestamp' : '" + msg_json.get("timestamp").replace('T', ' ').replace('Z','') + "'"
+                data_str += "{\n\t\t\t\"timestamp\": \"" + msg_json.get("timestamp") + "\", ["
                 if metric_group in [ "network" , "diskIO" , "physicalDeviceIO" , "fileSys" , "disks" ]:
                     for metric_detail in group:
-                        fixed_index = 1
+                        data_str += "\n\t\t\t\t{"
                         for fixed_metrics in fixed_em_metrics[metric_group]:
-                            if fixed_index == 1:
-                                data_str += " , '" + str(metric_detail[fixed_metrics]) + "'"
-                                fixed_index = 2
-                            else:
-                                data_str += " ( '" + str(metric_detail[fixed_metrics]) + "' )"
-                        data_str += " : { '" + metric + "': '" + str(metric_detail[metric]) + "' }"
-                    data_str += " }"
+                            data_str += "\n\t\t\t\t\t\"" + fixed_metrics + "\": \"" + str(metric_detail[fixed_metrics]) + "\","
+                        for m in metric_list:
+                            data_str += "\n\t\t\t\t\t\"" + m + "\": " + str(metric_detail[m]) + ","
+                        data_str += "\n\t\t\t\t},"
+                    #remove the last comma
+                    data_str = data_str[:-1]
+                    data_str += "\n\t\t\t]\n\t\t}"
                 else:
-                    data_str += " , '" + metric + "' : '" + str(group.get(metric)) + "' }"
+                    data_str += "\n\t\t\t\t{"
+                    for m in metric_list:
+                        data_str += "\n\t\t\t\t\t\"" + m + "\": " + str(group.get(m)) + ","
+                    #remove the last comma
+                    data_str = data_str[:-1]
+                    data_str += "\n\t\t\t\t}\n\t\t\t]\n\t\t}"
 
                 log_timestamp = msg_json.get("timestamp")
                 log_timestamp = log_timestamp.replace('T', ' ').replace('Z','')
@@ -184,11 +216,11 @@ def list_em_metrics(db_instance, metric, start_time, end_time):
                 break
 
         #data_str += "\n\t]\n}"
-        data_str += " ] }"
-        data_str = data_str.replace("'","\"")
-        data_json = json.loads(data_str)
-        print(data_json)
-        #print(data_str)
+        data_str += "\n\t]\n}"
+        #data_str = data_str.replace("'","\"")
+        #data_json = json.loads(data_str)
+        #print(data_json)
+        print(data_str)
 
     return
 
