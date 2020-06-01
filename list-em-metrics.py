@@ -63,26 +63,26 @@ def convert_to_timestamp(date_time):
 
 
 @click.command()
-@click.option('--db-instance', default=None,
-    help="Only metrics for a DBInstance")
-@click.option('--group',default=None,
-    help="Listing only metrics for a specific group")
+@click.option('--db-instance-identifier', default=None,
+    help="Only metrics for a DBInstance.")
+@click.option('--group', required=True,
+    help="Listing only metrics for a specific group.")
 @click.option('--metrics', default=None,
-    help="Set of metrics withing a group to be listed")
+    help="Set of metrics withing a group to be listed. If no metric is provided, all the metrics in the group will be listed.")
 @click.option('--start-time', default=None,
-    help="The start of the time range to list the metrics. If not provided, only the metrics for the last hour will be returned")
+    help="The start of the time range to list the metrics. If not provided, only the metrics for the last hour will be returned.")
 @click.option('--end-time', default=None,
-    help="The end of the time range to list the metrics. If not provided, only the metrics for one hour after the start time will be returned")
+    help="The end of the time range to list the metrics. If not provided, only the metrics for one hour after the start time will be returned.")
 
-def list_em_metrics(db_instance, group, metrics, start_time, end_time):
+def list_em_metrics(db_instance_identifier, group, metrics, start_time, end_time):
 
     #Check if db-instance was provided
-    if not db_instance:
+    if not db_instance_identifier:
         print("Please specify a DBInstance Identifier to list the metrics.")
         return
 
     #Get the esource id for the db-instance provided and the op
-    resource_id, os = get_resource_id(db_instance)
+    resource_id, os = get_resource_id(db_instance_identifier)
 
     #If db-instance was not foud, print a message to customer
     if not resource_id:
@@ -109,8 +109,7 @@ def list_em_metrics(db_instance, group, metrics, start_time, end_time):
 
     # Check if cusotmer provided a least one metric to be listed
     if not metrics:
-        print("Please specify a metric. Type list-em-metrics --metric --help for a list of available options.")
-        return
+        metric_list = os_metrics.get(group)
     else:
         # format metrics as a list
         metric_list = metrics.split(",")
@@ -151,77 +150,70 @@ def list_em_metrics(db_instance, group, metrics, start_time, end_time):
             print("Error: end-time must be greater than start-time")
         return
 
-    resource_id, so = get_resource_id(db_instance)
+    try:
+        response = log.get_log_events(logGroupName="RDSOSMetrics",logStreamName=resource_id,startTime=int(time_start*1000),endTime=int(time_end*1000),startFromHead=True)
+    except log.exceptions.ResourceNotFoundException:
+        print("Enhanced Monitoriong not enabled for DBInstance " + db_instance_identifier)
+        return
 
-    if not resource_id:
-        print("DBInstance not found. Please review the DbInstance Identifier and try again.")
-    else:
-        #print("Resource id: " + resource_id)
+    iteract = 1
+    data_str = ""
+    log_timestamp = time_start
 
-        try:
-            response = log.get_log_events(logGroupName="RDSOSMetrics",logStreamName=resource_id,startTime=int(time_start*1000),endTime=int(time_end*1000),startFromHead=True)
-        except log.exceptions.ResourceNotFoundException:
-            print("Enhanced Monitoriong not enabled for DBInstance " + db_instance)
-
-        iteract = 1
-        data_str = ""
-        log_timestamp = time_start
-
-        while iteract <= 2000 and log_timestamp < time_end:
-            for event in response.get('events'):
-                msg = event.get('message')
-                msg_json = json.loads(msg)
-                if iteract == 1:
-                    data_str = "{\n\t\"engine\": \"" + msg_json.get("engine") + "\",\n"
-                    data_str += "\t\"instanceID\": \"" + db_instance + "\",\n"
-                    data_str += "\t\"instanceResourceID\": \"" + resource_id + "\",\n"
-                    data_str += "\t\"numVCPUs\": " + str(msg_json.get("numVCPUs")) + ",\n"
-                    data_str += "\t\"uptime\": \"" + msg_json.get("uptime") + "\",\n"
-                    data_str += "\t\"" + metric_group + "\": [\n\t\t"
-                else:
-                    data_str += ",\n\t\t"
-                group = msg_json.get(metric_group)
-                data_str += "{\n\t\t\t\"timestamp\": \"" + msg_json.get("timestamp") + "\", ["
-                if metric_group in [ "network" , "diskIO" , "physicalDeviceIO" , "fileSys" , "disks" ]:
-                    for metric_detail in group:
-                        data_str += "\n\t\t\t\t{"
-                        for fixed_metrics in fixed_em_metrics[metric_group]:
-                            data_str += "\n\t\t\t\t\t\"" + fixed_metrics + "\": \"" + str(metric_detail[fixed_metrics]) + "\","
-                        for m in metric_list:
-                            data_str += "\n\t\t\t\t\t\"" + m + "\": " + str(metric_detail[m]) + ","
-                        data_str += "\n\t\t\t\t},"
-                    #remove the last comma
-                    data_str = data_str[:-1]
-                    data_str += "\n\t\t\t]\n\t\t}"
-                else:
+    while iteract <= 2000 and log_timestamp < time_end:
+        for event in response.get('events'):
+            msg = event.get('message')
+            msg_json = json.loads(msg)
+            if iteract == 1:
+                data_str = "{\n\t\"engine\": \"" + msg_json.get("engine") + "\",\n"
+                data_str += "\t\"instanceID\": \"" + db_instance_identifier + "\",\n"
+                data_str += "\t\"instanceResourceID\": \"" + resource_id + "\",\n"
+                data_str += "\t\"numVCPUs\": " + str(msg_json.get("numVCPUs")) + ",\n"
+                data_str += "\t\"uptime\": \"" + msg_json.get("uptime") + "\",\n"
+                data_str += "\t\"" + metric_group + "\": [\n\t\t"
+            else:
+                data_str += ",\n\t\t"
+            group = msg_json.get(metric_group)
+            data_str += "{\n\t\t\t\"timestamp\": \"" + msg_json.get("timestamp") + "\", ["
+            if metric_group in [ "network" , "diskIO" , "physicalDeviceIO" , "fileSys" , "disks" ]:
+                for metric_detail in group:
                     data_str += "\n\t\t\t\t{"
+                    for fixed_metrics in fixed_em_metrics[metric_group]:
+                        data_str += "\n\t\t\t\t\t\"" + fixed_metrics + "\": \"" + str(metric_detail[fixed_metrics]) + "\","
                     for m in metric_list:
-                        data_str += "\n\t\t\t\t\t\"" + m + "\": " + str(group.get(m)) + ","
-                    #remove the last comma
-                    data_str = data_str[:-1]
-                    data_str += "\n\t\t\t\t}\n\t\t\t]\n\t\t}"
+                        data_str += "\n\t\t\t\t\t\"" + m + "\": " + str(metric_detail[m]) + ","
+                    data_str += "\n\t\t\t\t},"
+                #remove the last comma
+                data_str = data_str[:-1]
+                data_str += "\n\t\t\t]\n\t\t}"
+            else:
+                data_str += "\n\t\t\t\t{"
+                for m in metric_list:
+                    data_str += "\n\t\t\t\t\t\"" + m + "\": " + str(group.get(m)) + ","
+                #remove the last comma
+                data_str = data_str[:-1]
+                data_str += "\n\t\t\t\t}\n\t\t\t]\n\t\t}"
 
-                log_timestamp = msg_json.get("timestamp")
-                log_timestamp = log_timestamp.replace('T', ' ').replace('Z','')
-                log_timestamp = convert_to_timestamp(log_timestamp)
+            log_timestamp = msg_json.get("timestamp")
+            log_timestamp = log_timestamp.replace('T', ' ').replace('Z','')
+            log_timestamp = convert_to_timestamp(log_timestamp)
 
-                iteract += 1
-                if iteract > 2000:
-                    break
-
-            next_token = response.get('nextForwardToken')
-
-            response = log.get_log_events(logGroupName="RDSOSMetrics",logStreamName=resource_id,startTime=int(time_start*1000),endTime=int(time_end*1000),nextToken=next_token,startFromHead=True)
-            if next_token == response.get('nextForwardToken'):
+            iteract += 1
+            if iteract > 2000:
                 break
 
-        #data_str += "\n\t]\n}"
-        data_str += "\n\t]\n}"
-        #data_str = data_str.replace("'","\"")
-        #data_json = json.loads(data_str)
-        #print(data_json)
-        print(data_str)
+        next_token = response.get('nextForwardToken')
 
+        response = log.get_log_events(logGroupName="RDSOSMetrics",logStreamName=resource_id,startTime=int(time_start*1000),endTime=int(time_end*1000),nextToken=next_token,startFromHead=True)
+        if next_token == response.get('nextForwardToken'):
+            break
+
+    #data_str += "\n\t]\n}"
+    data_str += "\n\t]\n}"
+    #data_str = data_str.replace("'","\"")
+    #data_json = json.loads(data_str)
+    #print(data_json)
+    print(data_str)
     return
 
 if __name__ == '__main__':
