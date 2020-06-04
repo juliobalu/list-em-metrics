@@ -10,6 +10,7 @@ session = boto3.Session()
 rds = session.client('rds')
 log = session.client('logs')
 
+#Dictionay will all EM metrics depending on the OS
 available_em_metrics = {
  "Windows" :  {
     "cpuUtilization" : [ "idle" , "kern" , "user" ] ,
@@ -30,10 +31,11 @@ available_em_metrics = {
     "loadAverageMinute" : [ "fifteen" , "five" , "one" ] ,
     "swap" : [ "swap" , "swap_in" , "swap_out" , "free" , "committed" ] } }
 
+#These metrics are not actually metrics, but a description or label and will be listed when the related group is specified.
 fixed_em_metrics = { "diskIO" : [ "device" ] ,"fileSys" : [ "mountPoint" , "name" ] ,"network" : [ "interface" ] ,"disks" : [ "name" ] }
 
+#This function returns the resource ID for the RDS DB Instance. The log stream name is the same as the resource ID
 def get_resource_id(instance):
-
     if instance:
         try:
             response = rds.describe_db_instances(DBInstanceIdentifier=instance)
@@ -45,11 +47,11 @@ def get_resource_id(instance):
                 os = "Linux"
         except rds.exceptions.DBInstanceNotFoundFault:
             resource_id = None
-
+    # return the resource ID and the Operating sytem to check if the group is valid for the DB instance passed as an argument
     return resource_id, os
 
+#Concvert the string date to a datetime variable in UTC time
 def convert_to_timestamp(date_time):
-
     try:
         date_time = datetime.strptime(date_time, "%Y-%m-%d %H:%M:%S")
     except ValueError:
@@ -70,9 +72,9 @@ def convert_to_timestamp(date_time):
 @click.option('--metrics', default=None,
     help="Set of metrics withing a group to be listed. If no metric is provided, all the metrics in the group will be listed.")
 @click.option('--start-time', default=None,
-    help="The start of the time range to list the metrics. If not provided, only the metrics for the last hour will be returned.")
+    help="The start of the time range to list the metrics. If not provided, only the metrics within the last hour will be listed, up to 2000 data points.")
 @click.option('--end-time', default=None,
-    help="The end of the time range to list the metrics. If not provided, only the metrics for one hour after the start time will be returned.")
+    help="The end of the time range to list the metrics. If not provided, current time will be considered, but up to 2000 data points will be listed.")
 
 def list_em_metrics(db_instance_identifier, group, metrics, start_time, end_time):
 
@@ -119,6 +121,7 @@ def list_em_metrics(db_instance_identifier, group, metrics, start_time, end_time
                 print("Metric " + m + " is not a valid metric for group " + group + ". Please refer to EM documentation for more information.")
                 return
 
+    #check if the start-time provided is a valid one.
     if start_time:
         start_time = start_time.replace('T', ' ').replace('Z','')
         time_start = convert_to_timestamp(start_time)
@@ -132,6 +135,7 @@ def list_em_metrics(db_instance_identifier, group, metrics, start_time, end_time
         time_start = time_start - timedelta(hours=1)
         time_start = datetime.timestamp(time_start)
 
+    #check if the end-time provided is a valid one.
     if end_time:
         end_time = end_time.replace('T', ' ').replace('Z','')
         time_end = convert_to_timestamp(end_time)
@@ -143,6 +147,7 @@ def list_em_metrics(db_instance_identifier, group, metrics, start_time, end_time
         time_end = datetime.now(timezone.utc)
         time_end = datetime.timestamp(time_end)
 
+    #Check if end-time is greater than start-time
     if time_end <= time_start:
         if not start_time:
             print("Error: start-time was not provided. start-time considered as " + datetime.utcfromtimestamp(time_start).strftime("%Y-%m-%d %H:%M:%S") + ". end-time must be greater than start-time.")
@@ -150,6 +155,7 @@ def list_em_metrics(db_instance_identifier, group, metrics, start_time, end_time
             print("Error: end-time must be greater than start-time")
         return
 
+    #Try to get the metrics for the db-instance.
     try:
         response = log.get_log_events(logGroupName="RDSOSMetrics",logStreamName=resource_id,startTime=int(time_start*1000),endTime=int(time_end*1000),startFromHead=True)
     except log.exceptions.ResourceNotFoundException:
@@ -160,6 +166,7 @@ def list_em_metrics(db_instance_identifier, group, metrics, start_time, end_time
     data_str = ""
     log_timestamp = time_start
 
+    #store the result on the variable data_str
     while iteract <= 2000 and log_timestamp < time_end:
         for event in response.get('events'):
             msg = event.get('message')
@@ -178,6 +185,7 @@ def list_em_metrics(db_instance_identifier, group, metrics, start_time, end_time
             if metric_group in [ "network" , "diskIO" , "physicalDeviceIO" , "fileSys" , "disks" ]:
                 for metric_detail in group:
                     data_str += "\n\t\t\t\t{"
+                    #check if there are description or label like metrics to return
                     for fixed_metrics in fixed_em_metrics[metric_group]:
                         data_str += "\n\t\t\t\t\t\"" + fixed_metrics + "\": \"" + str(metric_detail[fixed_metrics]) + "\","
                     for m in metric_list:
@@ -194,16 +202,20 @@ def list_em_metrics(db_instance_identifier, group, metrics, start_time, end_time
                 data_str = data_str[:-1]
                 data_str += "\n\t\t\t\t}\n\t\t\t]\n\t\t}"
 
+            #get the last timestamp to check if the end-time was reached.
             log_timestamp = msg_json.get("timestamp")
             log_timestamp = log_timestamp.replace('T', ' ').replace('Z','')
             log_timestamp = convert_to_timestamp(log_timestamp)
 
+            #add 1 to the number of data points returned
             iteract += 1
             if iteract > 2000:
                 break
 
+        #get the token for the next log stream
         next_token = response.get('nextForwardToken')
 
+        #get the next log stream. In case there isn't any, break out of loop
         response = log.get_log_events(logGroupName="RDSOSMetrics",logStreamName=resource_id,startTime=int(time_start*1000),endTime=int(time_end*1000),nextToken=next_token,startFromHead=True)
         if next_token == response.get('nextForwardToken'):
             break
